@@ -1,0 +1,41 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    
+    <!-- Outer Track Dial (Light Gray) -->
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="42"
+        android:strokeAlpha="0.1"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M 34 74 A 28 28 0 1 1 74 74" />
+
+    <!-- Active Speed Sweep Arc (Neon Cyan) -->
+    <path
+        android:strokeColor="#00E5FF"
+        android:strokeWidth="5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M 34 74 A 28 28 0 1 1 68 40" />
+
+    <!-- Speedometer Needle (White) -->
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="4"
+        android:strokeLineCap="round"
+        android:pathData="M 54 58 L 74 38" />
+
+    <!-- Center Pivot Cap (Neon Cyan Core) -->
+    <path
+        android:fillColor="#00E5FF"
+        android:pathData="M 54,54 m -5,0 a 5,5 0 1,1 10,0 a 5,5 0 1,1 -10,0" />
+
+    <!-- Center Pivot Border -->
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="1.5"
+        android:pathData="M 54,54 m -5,0 a 5,5 0 1,1 10,0 a 5,5 0 1,1 -10,0" />
+</vector>

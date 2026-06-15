@@ -1,0 +1,6 @@
+{
+  "name": "NetCheck",
+  "description": "אפליקציה מתקדמת לבדיקת מהירות, פינג ואיכות הרשת בזמן אמת",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
