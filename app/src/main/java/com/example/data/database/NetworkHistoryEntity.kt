@@ -14,5 +14,6 @@ data class NetworkHistoryEntity(
     val packetLossPercent: Int,
     val connectionType: String, // "Wi-Fi", "Cellular", "Offline"
     val ipAddress: String,
-    val isSuccess: Boolean
+    val isSuccess: Boolean,
+    val ssid: String = "N/A"
 )

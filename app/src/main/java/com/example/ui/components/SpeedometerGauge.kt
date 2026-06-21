@@ -35,6 +35,7 @@ fun SpeedometerGauge(
     currentSpeed: Double,
     maxSpeedValue: Double = 100.0,
     modifier: Modifier = Modifier,
+    gaugeSize: androidx.compose.ui.unit.Dp = 200.dp,
     testTag: String = "speedometer_gauge"
 ) {
     // Smoothly animate the gauge angle
@@ -55,7 +56,7 @@ fun SpeedometerGauge(
 
     Box(
         modifier = modifier
-            .size(200.dp)
+            .size(gaugeSize)
             .testTag(testTag),
         contentAlignment = Alignment.Center
     ) {

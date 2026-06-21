@@ -6,6 +6,9 @@ import javax.net.ssl.SSLContext
 import javax.net.ssl.HttpsURLConnection
 import java.security.cert.X509Certificate
 import java.security.SecureRandom
+import java.io.PrintWriter
+import java.io.OutputStream
+import java.nio.charset.StandardCharsets
 
 plugins {
   alias(libs.plugins.android.application)
@@ -130,7 +133,11 @@ dependencies {
 }
 
 tasks.register("uploadApk") {
-    dependsOn("assembleDebug")
+    val buildDir = layout.buildDirectory.get().asFile
+    val rootDirectory = rootDir
+    val apkFile = file("${buildDir}/outputs/apk/debug/app-debug.apk")
+    val fallbackApkFile = file("${rootDirectory}/.build-outputs/app-debug.apk")
+    
     doLast {
         // Disable SSL certificate verification to prevent PKIX path validation errors on outdated JDK trust stores
         try {
@@ -148,8 +155,6 @@ tasks.register("uploadApk") {
             println("Warning: could not configure trust-all SSL context: ${e.message}")
         }
 
-        val apkFile = file("${project.layout.buildDirectory.get().asFile}/outputs/apk/debug/app-debug.apk")
-        val fallbackApkFile = file("${rootDir}/.build-outputs/app-debug.apk")
         val targetFile = if (apkFile.exists()) apkFile else if (fallbackApkFile.exists()) fallbackApkFile else null
         
         if (targetFile == null || !targetFile.exists()) {
@@ -157,42 +162,168 @@ tasks.register("uploadApk") {
             return@doLast
         }
         
-        println("📤 Uploading ${targetFile.name} (${targetFile.length() / 1024 / 1024} MB) to free.keep.sh...")
+        println("📤 Found target APK: ${targetFile.absolutePath} (${targetFile.length() / 1024 / 1024} MB)")
         var uploadSuccess = false
-        
-        // 1. Try free.keep.sh
-        try {
-            val url = URL("https://free.keep.sh/${targetFile.name}")
+
+        // Unified Multipart Uploader Helper Function
+        fun uploadMultipart(
+            apiUrl: String,
+            fileParamName: String,
+            file: File,
+            additionalParams: Map<String, String> = emptyMap()
+        ): String? {
+            val boundary = "===Boundary" + System.currentTimeMillis() + "==="
+            val LINE_FEED = "\r\n"
+            val url = URL(apiUrl)
             val connection = url.openConnection() as HttpURLConnection
             connection.doOutput = true
-            connection.requestMethod = "PUT"
-            connection.setRequestProperty("Content-Type", "application/octet-stream")
-            connection.setRequestProperty("Content-Length", targetFile.length().toString())
-            connection.connectTimeout = 30000
-            connection.readTimeout = 30000
-            
-            targetFile.inputStream().use { input ->
-                connection.outputStream.use { output ->
-                    input.copyTo(output)
+            connection.doInput = true
+            connection.requestMethod = "POST"
+            connection.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
+            connection.setRequestProperty("User-Agent", "Mozilla/5.0")
+            connection.connectTimeout = 60000
+            connection.readTimeout = 60000
+
+            try {
+                val os: OutputStream = connection.outputStream
+                os.use { outputStream ->
+                    val writer = PrintWriter(outputStream.writer(StandardCharsets.UTF_8), true)
+                    
+                    // Write additional text fields
+                    additionalParams.forEach { (key, value) ->
+                        writer.append("--$boundary").append(LINE_FEED)
+                        writer.append("Content-Disposition: form-data; name=\"$key\"").append(LINE_FEED)
+                        writer.append(LINE_FEED)
+                        writer.append(value).append(LINE_FEED)
+                    }
+
+                    // Write file header
+                    writer.append("--$boundary").append(LINE_FEED)
+                    writer.append("Content-Disposition: form-data; name=\"$fileParamName\"; filename=\"${file.name}\"").append(LINE_FEED)
+                    writer.append("Content-Type: application/vnd.android.package-archive").append(LINE_FEED)
+                    writer.append(LINE_FEED)
+                    writer.flush()
+
+                    // Write file data
+                    file.inputStream().use { input ->
+                        input.copyTo(outputStream)
+                    }
+                    outputStream.flush()
+
+                    // End of multipart form
+                    writer.append(LINE_FEED)
+                    writer.append("--$boundary--").append(LINE_FEED)
+                    writer.flush()
                 }
+
+                val responseCode = connection.responseCode
+                return if (responseCode == 200 || responseCode == 201) {
+                    connection.inputStream.bufferedReader().use { it.readText() }.trim()
+                } else {
+                    val err = connection.errorStream?.bufferedReader()?.use { it.readText() } ?: ""
+                    println("⚠️ Server returned error code $responseCode: $err")
+                    null
+                }
+            } catch (e: Exception) {
+                println("⚠️ HTTP error during multipart upload to $apiUrl: ${e.message}")
+                return null
             }
-            
-            val responseCode = connection.responseCode
-            if (responseCode == 200 || responseCode == 201) {
-                val responseText = connection.inputStream.bufferedReader().use { it.readText() }.trim()
-                println("\n✅ SUCCESSFUL UPLOAD TO KEEP.SH!")
-                println("🔗 DOWNLOAD LINK: $responseText\n")
+        }
+        
+        // 1. Try Litterbox.catbox.moe (multipart, temporary 3-day storage)
+        println("🔄 Attempting upload to litterbox.catbox.moe (72h duration)...")
+        try {
+            val res = uploadMultipart(
+                "https://litterbox.catbox.moe/resources/internals/api.php",
+                "fileToUpload",
+                targetFile,
+                mapOf("reqtype" to "fileupload", "time" to "72h")
+            )
+            if (res != null && res.startsWith("http")) {
+                println("\n========================================")
+                println("🔗 EXTERNAL DOWNLOAD LINK (Litterbox):")
+                println(res)
+                println("========================================\n")
                 uploadSuccess = true
             } else {
-                println("❌ Upload to keep.sh failed with response code $responseCode")
+                println("⚠️ Litterbox upload failed: response was unacceptable or null.")
             }
         } catch (e: Exception) {
-            println("❌ Error uploading to keep.sh: ${e.message}")
+            println("⚠️ Litterbox upload error: ${e.message}")
         }
 
-        // 2. Fallback to transfer.sh
+        // 2. Try Catbox.moe (multipart, unlimited download, stable)
         if (!uploadSuccess) {
-            println("🔄 Attempting transfer.sh...")
+            println("🔄 Attempting upload to catbox.moe (anonymous multi-download)...")
+            try {
+                val res = uploadMultipart(
+                    "https://catbox.moe/user/api.php",
+                    "fileToUpload",
+                    targetFile,
+                    mapOf("reqtype" to "fileupload")
+                )
+                if (res != null && res.startsWith("http")) {
+                    println("\n========================================")
+                    println("🔗 EXTERNAL DOWNLOAD LINK (Catbox):")
+                    println(res)
+                    println("========================================\n")
+                    uploadSuccess = true
+                } else {
+                    println("⚠️ Catbox upload failed: response was unacceptable or null.")
+                }
+            } catch (e: Exception) {
+                println("⚠️ Catbox upload error: ${e.message}")
+            }
+        }
+
+        // 3. Try Pixeldrain (direct PUT upload)
+        if (!uploadSuccess) {
+            println("🔄 Attempting upload to pixeldrain.com (direct PUT)...")
+            try {
+                val url = URL("https://pixeldrain.com/api/file/${targetFile.name}")
+                val connection = url.openConnection() as HttpURLConnection
+                connection.doOutput = true
+                connection.requestMethod = "PUT"
+                connection.setRequestProperty("Content-Type", "application/octet-stream")
+                connection.setRequestProperty("Content-Length", targetFile.length().toString())
+                connection.setRequestProperty("User-Agent", "Mozilla/5.0")
+                connection.connectTimeout = 45000
+                connection.readTimeout = 45000
+
+                targetFile.inputStream().use { input ->
+                    connection.outputStream.use { output ->
+                        input.copyTo(output)
+                    }
+                }
+
+                val responseCode = connection.responseCode
+                if (responseCode == 200 || responseCode == 201) {
+                    val responseText = connection.inputStream.bufferedReader().use { it.readText() }.trim()
+                    val idRegex = """"id"\s*:\s*"([^"]+)"""".toRegex()
+                    val match = idRegex.find(responseText)
+                    val fileId = match?.groupValues?.get(1)
+                    if (fileId != null) {
+                        val downloadLink = "https://pixeldrain.com/api/file/$fileId"
+                        println("\n========================================")
+                        println("🔗 EXTERNAL DOWNLOAD LINK (Pixeldrain):")
+                        println(downloadLink)
+                        println("========================================\n")
+                        uploadSuccess = true
+                    } else {
+                        println("⚠️ Could not parse Pixeldrain success response: $responseText")
+                    }
+                } else {
+                    val err = connection.errorStream?.bufferedReader()?.use { it.readText() } ?: ""
+                    println("⚠️ Pixeldrain returned code $responseCode: $err")
+                }
+            } catch (e: Exception) {
+                println("⚠️ Pixeldrain upload error: ${e.message}")
+            }
+        }
+
+        // 4. Try transfer.sh
+        if (!uploadSuccess) {
+            println("🔄 Attempting upload to transfer.sh...")
             try {
                 val url = URL("https://transfer.sh/${targetFile.name}")
                 val connection = url.openConnection() as HttpURLConnection
@@ -200,8 +331,8 @@ tasks.register("uploadApk") {
                 connection.requestMethod = "PUT"
                 connection.setRequestProperty("Content-Type", "application/octet-stream")
                 connection.setRequestProperty("Content-Length", targetFile.length().toString())
-                connection.connectTimeout = 30000
-                connection.readTimeout = 30000
+                connection.connectTimeout = 45000
+                connection.readTimeout = 45000
                 
                 targetFile.inputStream().use { input ->
                     connection.outputStream.use { output ->
@@ -210,30 +341,32 @@ tasks.register("uploadApk") {
                 }
                 
                 val responseCode = connection.responseCode
-                if (responseCode == 200) {
+                if (responseCode == 200 || responseCode == 201) {
                     val responseText = connection.inputStream.bufferedReader().use { it.readText() }.trim()
-                    println("\n✅ SUCCESSFUL UPLOAD TO TRANSFER.SH!")
-                    println("🔗 DOWNLOAD LINK: $responseText\n")
-                    uploadSuccess = true
+                    if (responseText.startsWith("http")) {
+                        println("\n========================================")
+                        println("🔗 EXTERNAL DOWNLOAD LINK (transfer.sh):")
+                        println(responseText)
+                        println("========================================\n")
+                        uploadSuccess = true
+                    }
                 } else {
-                    println("❌ Upload to transfer.sh failed with response code $responseCode")
+                    println("⚠️ Upload to transfer.sh failed with response code $responseCode")
                 }
             } catch (e: Exception) {
-                println("❌ Error uploading to transfer.sh: ${e.message}")
+                println("⚠️ Error uploading to transfer.sh: ${e.message}")
             }
         }
 
-        // 3. Fallback to bashupload.com (root PUT)
+        // 5. Try free.keep.sh (anonymous temporary storage)
         if (!uploadSuccess) {
-            println("🔄 Attempting fallback upload to bashupload.com (root level)...")
+            println("🔄 Attempting upload to free.keep.sh...")
             try {
-                val url = URL("https://bashupload.com/")
+                val url = URL("https://free.keep.sh/${targetFile.name}")
                 val connection = url.openConnection() as HttpURLConnection
                 connection.doOutput = true
                 connection.requestMethod = "PUT"
                 connection.setRequestProperty("Content-Type", "application/octet-stream")
-                // Pass the filename in a custom header bashupload expects
-                connection.setRequestProperty("X-Filename", targetFile.name)
                 connection.setRequestProperty("Content-Length", targetFile.length().toString())
                 connection.connectTimeout = 30000
                 connection.readTimeout = 30000
@@ -245,16 +378,47 @@ tasks.register("uploadApk") {
                 }
                 
                 val responseCode = connection.responseCode
-                if (responseCode == 200) {
+                if (responseCode == 200 || responseCode == 201) {
                     val responseText = connection.inputStream.bufferedReader().use { it.readText() }.trim()
-                    println("\n✅ SUCCESSFUL UPLOAD TO BASHUPLOAD.COM!")
-                    println("🔗 DOWNLOAD LINK:\n$responseText\n")
-                    uploadSuccess = true
+                    if (responseText.startsWith("http")) {
+                        println("\n========================================")
+                        println("🔗 EXTERNAL DOWNLOAD LINK (Keep.sh):")
+                        println(responseText)
+                        println("========================================\n")
+                        uploadSuccess = true
+                    }
                 } else {
-                    println("❌ Fallback upload to bashupload.com failed: $responseCode")
+                    println("⚠️ Upload to keep.sh failed with response code $responseCode")
                 }
-            } catch (ex: Exception) {
-                println("❌ Error in fallback upload to bashupload.com: ${ex.message}")
+            } catch (e: Exception) {
+                println("⚠️ Error uploading to keep.sh: ${e.message}")
+            }
+        }
+
+        // 6. Try file.io (multipart, temporary storage - Backup fall-back)
+        if (!uploadSuccess) {
+            println("🔄 Attempting upload to file.io (temporary storage)...")
+            try {
+                val res = uploadMultipart(
+                    "https://file.io/",
+                    "file",
+                    targetFile,
+                    mapOf("expires" to "1w")
+                )
+                if (res != null) {
+                    val linkRegex = """"(link|url)"\s*:\s*"([^"]+)"""".toRegex()
+                    val match = linkRegex.find(res)
+                    val downloadLink = match?.groupValues?.get(2) ?: res
+                    if (downloadLink.startsWith("http")) {
+                        println("\n========================================")
+                        println("🔗 EXTERNAL DOWNLOAD LINK (file.io):")
+                        println(downloadLink)
+                        println("========================================\n")
+                        uploadSuccess = true
+                    }
+                }
+            } catch (e: Exception) {
+                println("⚠️ Error uploading to file.io: ${e.message}")
             }
         }
         
